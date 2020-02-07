@@ -5,26 +5,392 @@ date: "1/27/2020"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+# Libraries 
+```{r libraries , message =F , warning = F }
+library(tidyverse)
+library(plotly)
+library(smacof)
+library(ggrepel)
+library(ggraph)
+library(ggsci)
+library(gridExtra) 
+library(spdep) # for highD vis example, data rotation
+library(ggExtra) # for marginal distributions
 ```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r sourcing the CEM functions}
+source("cem_functions.R")
+source("DEA_viz.R")
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+# Artifical Example 
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+## Reading Data 
+
+```{r reading data}
+academic_ben_cem <- read_delim("academic_benevolent_cem_2.csv", delim = ";") %>% select(-1)
+
+academic_ben_cem <- academic_ben_cem/1000 
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Multidimensional Unfolding 
+
+```{r MDU artificial data }
+
+# unfolding the CEM
+t <- smacof::unfolding(delta = round((1-academic_ben_cem),2),ndim = 2)
+
+# adding DMU labels
+dmu_labels <- 1:nrow(academic_ben_cem)
+
+# making the coordinates data frames 
+row_df <- data.frame(t$conf.row,
+                     "DMU_label" = dmu_labels,
+                     DMU_type    = "Rating/Row")
+col_df <- data.frame(t$conf.col,
+                     "DMU_label" = dmu_labels,
+                     DMU_type    = "Rated/Column")
+
+# binding the row and column marks 
+unfolded_df <-
+    row_df %>% 
+    bind_rows(col_df)
+    
+# visualization    
+cem_unfolding_map <-        
+unfolded_df %>% 
+    ggplot() + 
+    geom_point(aes(x = D1 , y = D2 ,
+                   shape = DMU_type, 
+                   fill  = DMU_type,
+                   color = DMU_type) 
+               , size = 3) + 
+    geom_text_repel(aes(x = D1 , y = D2 , label = DMU_label )) +
+    theme(panel.background = element_rect(fill=NA),
+              panel.border = element_rect(fill = NA) ) + 
+    scale_shape_manual(values = c(0,10)) + 
+    scale_color_manual(values = c("orange4","limegreen")) +
+    coord_fixed(ratio = 1) + 
+    labs(title = "Visualization of CEM using MDU")
+
+cem_unfolding_map
+```
+
+## Network Visualization 
+
+
+```{r network vis artificial dataset}
+# preparing nodes dataframe 
+nodes <- data.frame(id         = as.character(1:nrow(academic_ben_cem)) ,
+                    label      = 1:nrow(academic_ben_cem),
+
+                    avg_cr_eff = map_df(academic_ben_cem,.f = mean),
+                    self_eff   = diag(as.matrix(academic_ben_cem))
+                    ) %>%
+    mutate( binary_self_eff = ifelse(self_eff==1,1,0))
+
+# preparing edges 
+edges <- academic_ben_cem %>%
+    mutate(from = row_number()) %>%
+    gather(key = "to", value = "cross_efficiency",1:7)
+
+# selection of perfect edges 
+chosen_edges <- 
+    edges %>% 
+    filter(cross_efficiency == 1)
+
+# reference set frequency 
+nodes_with_link_count <- nodes %>%
+        left_join(chosen_edges %>% count(to) , by = c("id"="to")) %>% 
+        ungroup() %>% 
+        mutate(ref_set_frequency = ifelse(test = is.na(n),
+                                          yes = 0,no = n )
+               ) %>% 
+    mutate(simple_efficiency = ifelse(binary_self_eff==1,
+                                      "efficient","inefficient")
+               ) %>% 
+    mutate(simple_efficiency = factor(simple_efficiency)
+               ) %>% 
+    dplyr::rename("simple_efficiency_score" = "self_eff"   ) 
+
+
+cem_graph_df <- chosen_edges
+
+# making an igraph object out of df 
+cem_graph <-igraph::graph_from_data_frame(cem_graph_df ,
+                                          directed = TRUE ,
+                                          vertices = nodes_with_link_count  )
+
+
+set.seed(7)
+cem_network_2 <- 
+ggraph(cem_graph, layout = "dh") + 
+        geom_edge_link(arrow = arrow(length = unit(4,"mm")),
+                       end_cap = circle(3,"mm"),
+                       start_cap = circle(3,"mm") , 
+                       alpha = 0.3) + 
+        geom_node_point(
+                mapping =  aes(colour = ref_set_frequency ,
+                               size = ref_set_frequency, 
+                               shape = simple_efficiency)) + 
+        scale_color_gradient(low = "darkblue" ,
+                             high = "red",
+                             aesthetics = "colour", 
+                             space = "Lab")+
+        geom_node_text(aes(label = label ,
+                           #alpha = avg_cr_eff ,
+                           size = ref_set_frequency), 
+                       color = "yellow") +
+        theme(panel.background = element_rect(fill=NA),
+              panel.border = element_rect(fill = NA) ) + 
+    scale_shape_manual(values = c(19,1)) + 
+    #scale_color_manual(values = c("green","red"))+
+    guides(alpha = FALSE ) + 
+    labs(title = "Visualization of CEM as a network")
+
+cem_network_2
+```
+
+# Real Dataset 
+
+## Reading Data 
+
+```{r}
+
+china_ciudades <- read_csv("chino_cities_refined.csv")
+china_ciudades %>% head()
+
+standardized_china <- 
+china_ciudades %>% 
+    modify_if(str_detect(colnames(.),pattern = "\\d$"),
+              .f = ~ .x / mean(.x))
+
+
+```
+
+## Multidimensional Unfolding 
+
+```{r real data unfolding}
+# benevolent CEM of the dataset 
+china_cem <-CEM(dataset = standardized_china %>%
+                    select(-c(1,2)) %>%
+                    as.data.frame(),
+                number_of_inputs = 3)
+
+set.seed(7)
+
+# unfolding of the CEM 
+ t <- smacof::unfolding(delta = round((1-china_cem),2),
+                        ndim = 2)
+# DMU labels 
+ dmu_labels <- 1:nrow(china_cem)
+
+# making data frame out of unfolding coordinates  
+row_df <- data.frame(t$conf.row, "DMU_label" =dmu_labels,
+                     DMU_type = "Rating/Row")
+col_df <- data.frame(t$conf.col, "DMU_label" = dmu_labels,
+                     DMU_type = "Rated/Column")
+
+unfolded_df <-
+    row_df %>% 
+    bind_rows(col_df)
+    
+# plotting 
+real_example_unfolding <-         
+unfolded_df %>% 
+    ggplot() + 
+    geom_point(aes(x = D1 , y = D2 ,
+                   shape = DMU_type, 
+                   fill = DMU_type,
+                   color = DMU_type) , size = 3) + 
+    geom_text_repel(aes(x = D1 , y = D2 ,
+                        label = DMU_label ), alpha = 0.3) +
+    theme(panel.background = element_rect(fill=NA),
+              panel.border = element_rect(fill = NA) ) + 
+    scale_shape_manual(values = c(0,10)) + 
+    scale_color_manual(values = c("orange4","limegreen")) +
+    coord_fixed(ratio = 1) + 
+    labs(title = "Visualization of CEM using MDU")
+
+real_example_unfolding
+```
+
+## Network Visualization 
+
+```{r NetViz }
+# nodes 
+china_cem <- china_cem %>% as.tibble()
+nodes <- data.frame(id = as.character(1:nrow(china_cem)) ,
+                    label = 1:nrow(china_cem),
+                    avg_cr_eff = map_df(china_cem, mean),  
+                    self_eff = round(diag(as.matrix(china_cem)),4), 
+                    cref_sd = map_df(china_cem, .f =  sd)  
+                    ) %>%
+    mutate( binary_self_eff = ifelse(self_eff==1,1,0))
+
+# edges 
+edges <- china_cem %>%
+    as.data.frame() %>% 
+    set_names(names(.) %>% str_replace(pattern = "V", replacement = "")) %>% 
+    mutate(from = 1:nrow(.)) %>%
+    select(from,everything()) %>% 
+    gather(key = "to", value = "cross_efficiency",2:ncol(.)) %>% 
+    mutate(cross_efficiency = round(cross_efficiency,4))
+
+# edge selection 
+chosen_edges <- 
+    edges %>% 
+    filter(cross_efficiency == 1)
+
+nodes_with_link_count <- nodes %>%
+        left_join(chosen_edges %>% count(to) ,
+                  by = c("id"="to")) %>% 
+        ungroup() %>% 
+        mutate(ref_set_frequency = ifelse(test = is.na(n),
+                                          yes = 0,no = n )) %>% 
+    mutate(simple_efficiency = ifelse(binary_self_eff==1,
+                                      "efficient","inefficient")) %>% 
+    mutate(simple_efficiency = factor(simple_efficiency)) %>% 
+    rename("simple_efficiency_score" = "self_eff"   ) 
+
+cem_graph_df <- chosen_edges
+
+china_cem_graph <-igraph::graph_from_data_frame(cem_graph_df , directed = TRUE ,
+                                          vertices = nodes_with_link_count  )
+
+
+set.seed(7)
+china_cem_network_2 <- 
+ggraph(china_cem_graph, layout = "dh") + 
+        geom_edge_link(arrow = arrow(length = unit(4,"mm")),
+                       end_cap = circle(3,"mm"),
+                       start_cap = circle(3,"mm") , 
+                       alpha = 0.3) + 
+        geom_node_point(
+                mapping =  aes(colour = ref_set_frequency ,
+                               size = ref_set_frequency, 
+                               shape = simple_efficiency)) + 
+        scale_color_gradient(low = "darkblue" ,
+                             high = "red",
+                             aesthetics = "colour", 
+                             space = "Lab")+
+        geom_node_text(aes(label = label ,
+                           #alpha = avg_cr_eff ,
+                           size = ref_set_frequency/2), 
+                       color = "yellow") +
+        theme(panel.background = element_rect(fill=NA),
+              panel.border = element_rect(fill = NA) ) + 
+    scale_shape_manual(values = c(19,1)) + 
+    #scale_color_manual(values = c("green","red"))+
+    guides(alpha = FALSE )
+
+china_cem_network_2
+```
+
+
+# Anscombe
+
+```{r}
+plot_data <- 
+function(data){
+    data %>% 
+    ggplot() + 
+    geom_point(aes(x , y), size = 4 , alpha = 0.3) + 
+    geom_smooth(aes(x , y),
+                method = "lm", 
+                se = FALSE,
+                linetype = "dashed") +  
+     theme_bw() + 
+    xlim(min_x,max_x) + 
+    ylim(min_y, max_y)
+    
+}
+
+
+tidy_anscombe <- 
+anscombe %>%
+    select(matches("x")) %>%
+    mutate(point_id = row_number()) %>% 
+    gather(key = "set" , value = "x", -point_id) %>% 
+    mutate(set = str_replace(set,
+                             pattern     = "[:alpha:]",
+                             replacement = "")
+           ) %>% 
+    left_join(
+        anscombe %>%
+    select(matches("y")) %>%
+    mutate(point_id = row_number()) %>%     
+    gather(key = "set" , value = "y", - point_id) %>% 
+        mutate(set = str_replace(set,
+                             pattern     = "[:alpha:]",
+                             replacement = "")) ,
+    by = c("set"="set","point_id"="point_id")
+    )
+
+min_x <- tidy_anscombe %>% summarise(m = min(x)) %>% pull(m)
+max_x <- tidy_anscombe %>% summarise(m = max(x)) %>% pull(m)
+min_y <- tidy_anscombe %>% summarise(m = min(y)) %>% pull(m)
+max_y <- tidy_anscombe %>% summarise(m = max(y)) %>% pull(m)
+
+anscombe_plots <- tidy_anscombe %>% split(.$set) %>% map(plot_data)
+
+
+ grid.arrange(grobs = anscombe_plots,
+              top   = "Anscombe's Quartet")
+gg_anscombe <- arrangeGrob(grobs = anscombe_plots,
+                           top   = "Anscombe's Quartet" )
+gg_anscombe
+```
+
+# HighD Vis Importance 
+
+```{r oval shape}
+
+set.seed(7)
+
+x_upper = seq(from = -2 , to = 2 , by = 0.02)
+x_lower = seq(from = -2 , to = 2 , by = 0.02)
+y_upper = sqrt(1 - (x_upper^2)/4 ) + 3 
+y_lower = -sqrt(1 - (x_upper^2)/4 ) + 3 
+
+x = c(x_lower, x_upper)
+y = c(y_lower , y_upper) 
+y_jittered = y + rnorm(n = length(y) , mean = 0 , sd = 0.1)
+
+
+dataset_elipse<- 
+tibble(x = x , y = y_jittered) %>% 
+    Rotation(angle = -40) %>% 
+    as_tibble() %>%
+    set_names(c("x","y"))
+
+
+
+dataset <- 
+    dataset_elipse %>% 
+    mutate( color = "1" , alpha = 0.3) %>% 
+    bind_rows(tibble(x     = median(dataset_elipse$x),
+               y     = median(dataset_elipse$y),
+               color = "2" ,
+               alpha = 0.5 ))
+
+gg_highD_vis <- 
+dataset %>% 
+    ggplot() + 
+    geom_point(aes(x,y,color = color, alpha = alpha),
+               size = 4) + 
+    theme_bw() + 
+    coord_equal() + 
+    scale_color_manual(values = c("black","red")) + 
+    theme(legend.position = "none")  + 
+    ggtitle(label = c("Emergent Properties in HighD Visualization"))
+    
+
+gg_highD_vis_w_margin <- ggMarginal(gg_highD_vis ,
+                                    type = "histogram",
+                                    size = 8)
+
+gg_highD_vis_w_margin
+```
