@@ -289,6 +289,18 @@ ggraph(china_cem_graph, layout = "dh") +
 china_cem_network_2
 ```
 
+## Maverick Index 
+
+```{r Doyle and Green Maverick Index }
+tibble(self_eff = diag(china_cem %>% as.matrix()) , 
+       avg_cr_eff = map_dbl(china_cem, mean) ) %>%
+    mutate(id = row_number()) %>% 
+    group_by(id) %>% 
+    mutate(DnG_MI = (self_eff - avg_cr_eff)/avg_cr_eff) %>% 
+    ungroup() %>% 
+    arrange(desc(DnG_MI))
+```
+
 
 # Anscombe
 
